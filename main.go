@@ -24,7 +24,7 @@ func stream(account string) error {
 	if err != nil {
 		return fmt.Errorf("delete all rules: %w", err)
 	}
-	res, err := twitwi.SetRules(ctx, []ValueTag{{Value: "dog has:images", Tag: "dog has images "}})
+	res, err := twitwi.SetRules(ctx, []ValueTag{{Value: "from:" + account, Tag: "from " + account}})
 	if err != nil {
 		return fmt.Errorf("set rules: %w", err)
 	}
