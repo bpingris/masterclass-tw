@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 
 	"github.com/joho/godotenv"
+	"github.com/pkg/errors"
 )
 
-func stream(listenTo string) error {
+func stream(account string) error {
 	ctx := context.Background()
 	twitwi := NewTwi()
 	rules, err := twitwi.GetRules(ctx)
@@ -22,7 +24,7 @@ func stream(listenTo string) error {
 	if err != nil {
 		return fmt.Errorf("delete all rules: %w", err)
 	}
-	res, err := twitwi.SetRules(ctx, []ValueTag{{Value: fmt.Sprintf("from:%s", listenTo), Tag: fmt.Sprintf("from %s", listenTo)}})
+	res, err := twitwi.SetRules(ctx, []ValueTag{{Value: "dog has:images", Tag: "dog has images "}})
 	if err != nil {
 		return fmt.Errorf("set rules: %w", err)
 	}
@@ -30,7 +32,11 @@ func stream(listenTo string) error {
 	if err != nil {
 		return fmt.Errorf("stream: %w", err)
 	}
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("invalid status: %d", res.StatusCode)
+	}
 	defer res.Body.Close()
+
 	dec := json.NewDecoder(res.Body)
 
 	type StreamResponse struct {
@@ -43,6 +49,7 @@ func stream(listenTo string) error {
 			Tag string `json:"tag"`
 		} `json:"matching_rules"`
 	}
+	log.Println("stream started")
 	for {
 		var m StreamResponse
 		if err := dec.Decode(&m); err != nil {
@@ -52,7 +59,19 @@ func stream(listenTo string) error {
 			return fmt.Errorf("decode response: %w", err)
 		}
 		log.Printf("found a tweet: %s - %s\n", m.Data.Text, m.Data.ID)
-		twitwi.Send(ctx, WithReplyID(m.Data.ID), WithText("masterclass"))
+		res, err := twitwi.Send(ctx, WithReplyID(m.Data.ID), WithText("masterclass"))
+		if err != nil {
+			return errors.Wrap(err, "send tweet")
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusCreated {
+			b, err := io.ReadAll(res.Body)
+			if err != nil {
+				return errors.Wrap(err, "read body")
+			}
+			log.Printf("%s", string(b))
+			return fmt.Errorf("invalid status: %d", res.StatusCode)
+		}
 	}
 	return nil
 }
@@ -61,13 +80,13 @@ func run() error {
 	if err := godotenv.Load(); err != nil {
 		return err
 	}
-	listenTo := flag.String("account", "", "the account to listen to its tweets")
+	account := flag.String("account", "", "the account to listen to its tweets")
 	flag.Parse()
-	if *listenTo == "" {
+	if *account == "" {
 		flag.Usage()
-		return fmt.Errorf("invalid `listenTo` flag")
+		return fmt.Errorf("invalid `account` flag")
 	}
-	return stream(*listenTo)
+	return stream(*account)
 }
 
 func main() {
