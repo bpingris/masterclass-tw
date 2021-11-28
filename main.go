@@ -3,17 +3,16 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/joho/godotenv"
-	"github.com/pkg/errors"
 )
 
-func stream(account string) error {
+func stream() error {
 	ctx := context.Background()
 	twitwi := NewTwi()
 	rules, err := twitwi.GetRules(ctx)
@@ -24,11 +23,15 @@ func stream(account string) error {
 	if err != nil {
 		return fmt.Errorf("delete all rules: %w", err)
 	}
-	res, err := twitwi.SetRules(ctx, []ValueTag{{Value: "from:" + account, Tag: "from " + account}})
+	res, err := twitwi.SetRules(ctx, []ValueTag{{Value: "@PlsSaveThis"}})
 	if err != nil {
 		return fmt.Errorf("set rules: %w", err)
 	}
-	res, err = twitwi.Stream(ctx)
+	res, err = twitwi.Stream(ctx, []QueryParam{
+		{"expansions", "author_id,referenced_tweets.id"},
+		{"user.fields", "username"},
+		{"tweet.fields", "in_reply_to_user_id"},
+	}...)
 	if err != nil {
 		return fmt.Errorf("stream: %w", err)
 	}
@@ -39,54 +42,80 @@ func stream(account string) error {
 
 	dec := json.NewDecoder(res.Body)
 
-	type StreamResponse struct {
-		Data struct {
-			ID   string `json:"id"`
-			Text string `json:"text"`
-		} `json:"data"`
-		MatchingRules []struct {
-			ID  string `json:"id"`
-			Tag string `json:"tag"`
-		} `json:"matching_rules"`
-	}
 	log.Println("stream started")
 	for {
-		var m StreamResponse
-		if err := dec.Decode(&m); err != nil {
+		var sr StreamResponse
+		if err := dec.Decode(&sr); err != nil {
 			if err == io.EOF {
 				break
 			}
 			return fmt.Errorf("decode response: %w", err)
 		}
-		log.Printf("found a tweet: %s - %s\n", m.Data.Text, m.Data.ID)
-		res, err := twitwi.Send(ctx, WithReplyID(m.Data.ID), WithText("masterclass"))
-		if err != nil {
-			return errors.Wrap(err, "send tweet")
+
+		if sr.Data.AuthorID == "3401628065" {
+			log.Println("Ignoring own tweets")
+			continue
 		}
-		defer res.Body.Close()
-		if res.StatusCode != http.StatusCreated {
-			b, err := io.ReadAll(res.Body)
-			if err != nil {
-				return errors.Wrap(err, "read body")
-			}
-			log.Printf("%s", string(b))
-			return fmt.Errorf("invalid status: %d", res.StatusCode)
-		}
+
+		log.Printf("found a tweet: %s - %s - %s\n", sr.Data.Text, sr.Data.ID, sr.Data.AuthorID)
+		go handle(twitwi, &sr)
 	}
 	return nil
+}
+
+type StreamResponse struct {
+	Data struct {
+		ID               string `json:"id"`
+		Text             string `json:"text"`
+		AuthorID         string `json:"author_id"`
+		InReplyToUserID  string `json:"in_reply_to_user_id"`
+		ReferencedTweets []struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+		} `json:"referenced_tweets"`
+	} `json:"data"`
+	Includes struct {
+		Tweets []struct {
+			AuthorID string `json:"author_id"`
+			ID       string `json:"id"`
+			Text     string `json:"text"`
+		} `json:"tweets"`
+		Users []struct {
+			ID       string `json:"id"`
+			Name     string `json:"name"`
+			Username string `json:"username"`
+		}
+	} `json:"includes"`
+	MatchingRules []struct {
+		ID  string `json:"id"`
+		Tag string `json:"tag"`
+	} `json:"matching_rules"`
+}
+
+func handle(t *Twitwi, sr *StreamResponse) {
+	if len(sr.Includes.Tweets) != 1 {
+		log.Printf("tweets: %d\n", len(sr.Includes.Tweets))
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
+	defer cancel()
+	ts, err := t.Status(ctx, sr.Includes.Tweets[0].ID)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	if len(ts.ExtendedEntities.Media) == 0 {
+		return
+	}
+	t.Send(ctx, WithReplyID(sr.Data.ID), WithText(ts.ExtendedEntities.Media[0].VideoInfo.Variants[0].URL))
+	fmt.Printf("ts.ExtendedEntities.Media[0].VideoInfo.Variants[0].URL: %v\n", ts.ExtendedEntities.Media[0].VideoInfo.Variants[0].URL)
 }
 
 func run() error {
 	if err := godotenv.Load(); err != nil {
 		return err
 	}
-	account := flag.String("account", "", "the account to listen to its tweets")
-	flag.Parse()
-	if *account == "" {
-		flag.Usage()
-		return fmt.Errorf("invalid `account` flag")
-	}
-	return stream(*account)
+	return stream()
 }
 
 func main() {
