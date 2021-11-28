@@ -107,8 +107,14 @@ func handle(t *Twitwi, sr *StreamResponse) {
 	if len(ts.ExtendedEntities.Media) == 0 {
 		return
 	}
-	t.Send(ctx, WithReplyID(sr.Data.ID), WithText(ts.ExtendedEntities.Media[0].VideoInfo.Variants[0].URL))
-	fmt.Printf("ts.ExtendedEntities.Media[0].VideoInfo.Variants[0].URL: %v\n", ts.ExtendedEntities.Media[0].VideoInfo.Variants[0].URL)
+	res, err := t.Send(ctx, WithReplyID(sr.Data.ID), WithText(ts.ExtendedEntities.Media[0].VideoInfo.Variants[0].URL))
+	if err != nil {
+		log.Printf("send tweet: %v", err)
+		return
+	}
+	if res.StatusCode != http.StatusOK {
+		log.Printf("invalid status code: %d", res.StatusCode)
+	}
 }
 
 func run() error {
